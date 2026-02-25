@@ -21,6 +21,7 @@
         <button class="tab active" data-tab="library" role="tab" aria-selected="true">Library</button>
         <button class="tab" data-tab="new-song" role="tab" aria-selected="false">New Song</button>
         <button class="tab" data-tab="setlists" role="tab" aria-selected="false">Setlists</button>
+        <button class="tab" data-tab="integrations" role="tab" aria-selected="false">Integrations</button>
       </nav>
 
       <main>
@@ -208,6 +209,44 @@
               </label>
             </div>
             <div id="setlist-history-list" class="saved-song-list"></div>
+          </div>
+        </section>
+
+        <section id="integrations" class="panel" role="tabpanel" hidden>
+          <h2>Integrations</h2>
+          <p>Connect read-only sources and import setlists into Preppy.</p>
+
+          <div class="settings-card">
+            <h3>Planning Center (Read-only)</h3>
+            <p class="hint">
+              Uses API app ID + secret for read-only calls. Credentials are stored locally on this machine only.
+            </p>
+            <div class="stub-meta-grid">
+              <label>
+                PCO App ID
+                <input id="pco-app-id" type="text" placeholder="Your Planning Center app ID" />
+              </label>
+              <label>
+                PCO Secret
+                <input id="pco-secret" type="password" placeholder="Your Planning Center app secret" />
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="pco-save" type="button">Save Credentials</button>
+              <button id="pco-load-plans" type="button">Load Upcoming Plans</button>
+            </div>
+            <div class="stub-meta-grid">
+              <label>
+                Upcoming Plans
+                <select id="pco-plan-select">
+                  <option value="">Load plans first...</option>
+                </select>
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="pco-import-plan" type="button">Import Selected Plan</button>
+            </div>
+            <p id="pco-status" class="save-status" aria-live="polite"></p>
           </div>
         </section>
       </main>

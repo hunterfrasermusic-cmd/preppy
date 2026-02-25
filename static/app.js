@@ -43,6 +43,7 @@ let setlistState = {
   name: "",
   items: []
 };
+let pcoPlans = [];
 let sectionRefs = [];
 let activeSectionIndex = 0;
 let autoServiceName = true;
@@ -51,6 +52,7 @@ const expandedSongIds = new Set();
 wireTabs();
 wireLibraryEditor();
 wireSetlistBuilder();
+wireIntegrations();
 renderSectionPalette();
 renderLibraryList();
 renderSetlistUI();
@@ -433,6 +435,208 @@ function getPrepOutputLines() {
       .split(/\r?\n/)
       .map((line) => line.trimEnd())
   );
+}
+
+function wireIntegrations() {
+  const appIdInput = document.getElementById("pco-app-id");
+  const secretInput = document.getElementById("pco-secret");
+  const saveButton = document.getElementById("pco-save");
+  const loadPlansButton = document.getElementById("pco-load-plans");
+  const importPlanButton = document.getElementById("pco-import-plan");
+  const planSelect = document.getElementById("pco-plan-select");
+  const status = document.getElementById("pco-status");
+
+  if (!appIdInput || !secretInput || !saveButton || !loadPlansButton || !importPlanButton || !planSelect || !status) {
+    return;
+  }
+
+  const setStatus = (text, ok = false) => {
+    status.textContent = text;
+    status.classList.toggle("ok", ok);
+  };
+
+  const renderPlanOptions = () => {
+    planSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = pcoPlans.length ? "Select a plan..." : "Load plans first...";
+    planSelect.appendChild(placeholder);
+
+    pcoPlans.forEach((plan) => {
+      const option = document.createElement("option");
+      option.value = `${plan.service_type_id}::${plan.plan_id}`;
+      option.textContent = `${plan.sort_date || "No date"} | ${plan.service_type_name || "Service Type"} | ${plan.title || "Plan"}`;
+      planSelect.appendChild(option);
+    });
+  };
+
+  const refreshPcoStatus = async () => {
+    try {
+      const response = await fetch("/api/pco/status");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not load PCO status.");
+
+      if (payload.configured) {
+        setStatus(`PCO connected (${payload.source}).`, true);
+      } else {
+        setStatus("PCO not configured yet.");
+      }
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  saveButton.addEventListener("click", async () => {
+    const appId = appIdInput.value.trim();
+    const secret = secretInput.value.trim();
+    if (!appId || !secret) {
+      setStatus("Enter app ID and secret first.");
+      return;
+    }
+
+    saveButton.disabled = true;
+    setStatus("Saving credentials...");
+    try {
+      const response = await fetch("/api/pco/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app_id: appId, secret })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not save credentials.");
+      setStatus("PCO credentials saved.", true);
+      secretInput.value = "";
+      await refreshPcoStatus();
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+
+  loadPlansButton.addEventListener("click", async () => {
+    loadPlansButton.disabled = true;
+    setStatus("Loading upcoming plans...");
+    try {
+      const response = await fetch("/api/pco/upcoming-plans");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not load plans.");
+      pcoPlans = Array.isArray(payload.plans) ? payload.plans : [];
+      renderPlanOptions();
+      setStatus(`Loaded ${pcoPlans.length} upcoming plans.`, true);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      loadPlansButton.disabled = false;
+    }
+  });
+
+  importPlanButton.addEventListener("click", async () => {
+    const selected = planSelect.value;
+    if (!selected) {
+      setStatus("Choose a plan first.");
+      return;
+    }
+    const [serviceTypeId, planId] = selected.split("::");
+    if (!serviceTypeId || !planId) {
+      setStatus("Invalid plan selection.");
+      return;
+    }
+
+    importPlanButton.disabled = true;
+    setStatus("Importing plan songs...");
+    try {
+      const params = new URLSearchParams({ service_type_id: serviceTypeId, plan_id: planId });
+      const response = await fetch(`/api/pco/import-plan?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Plan import failed.");
+
+      const imported = importPcoPlanIntoLibrary(payload.plan, payload.songs);
+      setStatus(`Imported ${imported} songs from selected plan.`, true);
+      activateTab("setlists");
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      importPlanButton.disabled = false;
+    }
+  });
+
+  renderPlanOptions();
+  refreshPcoStatus();
+}
+
+function importPcoPlanIntoLibrary(plan, songs) {
+  const list = Array.isArray(songs) ? songs : [];
+  const nextItems = [];
+  let importedCount = 0;
+
+  list.forEach((entry) => {
+    const title = String(entry?.title || "").trim();
+    if (!title) return;
+
+    const artist = String(entry?.artist || "").trim();
+    const arrangementName = String(entry?.arrangement || "Main").trim() || "Main";
+    const key = String(entry?.key || "").trim();
+    const bpm = String(entry?.bpm || "").trim();
+
+    let song = songLibrary.find(
+      (item) =>
+        normalizeText(item.title) === normalizeText(title) &&
+        normalizeText(item.artist || "") === normalizeText(artist)
+    );
+
+    if (!song) {
+      song = {
+        id: createId("song"),
+        title,
+        artist,
+        arrangements: []
+      };
+      songLibrary.push(song);
+    }
+
+    let arrangement = (song.arrangements || []).find((arr) => {
+      const sameName = normalizeText(arr.name || "") === normalizeText(arrangementName);
+      const sameKey = normalizeText(arr.key || "") === normalizeText(key);
+      const sameBpm = normalizeText(String(arr.bpm || "")) === normalizeText(bpm);
+      return sameName && sameKey && sameBpm;
+    });
+
+    if (!arrangement) {
+      arrangement = {
+        id: createId("arr"),
+        name: arrangementName,
+        key,
+        bpm,
+        sections: defaultSectionsStub()
+      };
+      song.arrangements.push(arrangement);
+    }
+
+    nextItems.push({ songId: song.id, arrangementId: arrangement.id });
+    importedCount += 1;
+  });
+
+  if (plan && typeof plan === "object") {
+    if (plan.sort_date) {
+      setlistState.date = plan.sort_date;
+      const dateInput = document.getElementById("setlist-date");
+      if (dateInput) dateInput.value = setlistState.date;
+    }
+    setlistState.name = String(plan.title || formatLongDate(setlistState.date || todayDateString())).trim();
+    const nameInput = document.getElementById("setlist-name");
+    if (nameInput) nameInput.value = setlistState.name;
+    const display = document.getElementById("service-date-display");
+    if (display) display.textContent = `Service: ${formatLongDate(setlistState.date)}`;
+    autoServiceName = normalizeText(setlistState.name) === normalizeText(formatLongDate(setlistState.date));
+  }
+
+  setlistState.items = nextItems;
+  saveSongLibrary();
+  renderLibraryList();
+  renderSetlistUI();
+  renderSetlistHistory();
+  return importedCount;
 }
 
 function saveCurrentSetlistSnapshot(options = {}) {
