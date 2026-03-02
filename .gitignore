@@ -1,3 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
+.toolchain/
+tauri-wrapper/node_modules/
+tauri-wrapper/src-tauri/target/

@@ -572,4 +572,10 @@ def default_sections_stub() -> list[dict]:
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    port_raw = os.getenv("PREPPY_PORT", "5000").strip()
+    debug_mode = os.getenv("PREPPY_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 5000
+    app.run(debug=debug_mode, use_reloader=debug_mode, host="127.0.0.1", port=port)
