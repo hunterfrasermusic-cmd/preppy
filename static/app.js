@@ -34,11 +34,11 @@ const DEFAULT_EXPORT_HEADER_LINES = [
 ];
 const DRAG_START_THRESHOLD_PX = 48;
 
-let songLibrary = loadSongLibrary();
-let savedSetlists = loadSavedSetlists();
+let songLibrary = [];
+let savedSetlists = [];
 let parsedSongState = null;
 let setlistState = {
-  id: createId("set"),
+  id: null,
   date: todayDateString(),
   name: "",
   items: []
@@ -48,13 +48,60 @@ let activeSectionIndex = 0;
 let autoServiceName = true;
 const expandedSongIds = new Set();
 
-wireTabs();
-wireLibraryEditor();
-wireSetlistBuilder();
-renderSectionPalette();
-renderLibraryList();
-renderSetlistUI();
-renderSetlistHistory();
+async function init() {
+  const cfg = window.PREPPY_CONFIG || {};
+  if (cfg.dbEnabled) {
+    try {
+      [songLibrary, savedSetlists] = await Promise.all([
+        apiFetch("/api/songs").then((r) => r.json()),
+        apiFetch("/api/setlists").then((r) => r.json()),
+      ]);
+    } catch (e) {
+      console.error("Failed to load data from server:", e);
+      songLibrary = [];
+      savedSetlists = [];
+    }
+  } else {
+    songLibrary = loadSongLibrary();
+    savedSetlists = loadSavedSetlists();
+  }
+
+  wireTabs();
+  wireLibraryEditor();
+  wireSetlistBuilder();
+  renderSectionPalette();
+  renderLibraryList();
+  renderSetlistUI();
+  renderSetlistHistory();
+
+  // Show migration card if server library is empty but localStorage has data
+  if (cfg.dbEnabled && songLibrary.length === 0) {
+    const lsData = parseJsonArray(localStorage.getItem(LIBRARY_STORAGE_KEY));
+    if (lsData && lsData.length > 0) {
+      const card = document.getElementById("migrate-card");
+      if (card) card.style.display = "";
+    }
+  }
+}
+
+init();
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+
+async function apiFetch(url, options = {}) {
+  const resp = await fetch(url, options);
+  if (resp.status === 401) {
+    window.location.href = "/auth/pco";
+    throw new Error("Not authenticated");
+  }
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${resp.status}`);
+  }
+  return resp;
+}
 
 function wireTabs() {
   const tabs = document.querySelectorAll(".tab");
@@ -187,7 +234,7 @@ function wireLibraryEditor() {
     status.classList.add("ok");
   });
 
-  saveSongButton.addEventListener("click", () => {
+  saveSongButton.addEventListener("click", async () => {
     if (!parsedSongState) return;
 
     const title = (parsedSongState.song.title || "").trim();
@@ -203,13 +250,21 @@ function wireLibraryEditor() {
       return;
     }
 
-    persistParsedSong();
-    saveSongLibrary();
-    renderLibraryList();
-    renderSetlistUI();
-
-    status.textContent = `Saved ${title} (${arrangementName})`;
-    status.classList.add("ok");
+    saveSongButton.disabled = true;
+    status.textContent = "Saving...";
+    status.classList.remove("ok");
+    try {
+      await persistParsedSong();
+      renderLibraryList();
+      renderSetlistUI();
+      status.textContent = `Saved ${title} (${arrangementName})`;
+      status.classList.add("ok");
+    } catch (e) {
+      status.textContent = `Save failed: ${e.message}`;
+      status.classList.remove("ok");
+    } finally {
+      saveSongButton.disabled = false;
+    }
   });
 
   addSectionButton.addEventListener("click", () => {
@@ -311,19 +366,22 @@ function wireSetlistBuilder() {
   historyMonth.addEventListener("input", () => renderSetlistHistory());
   historyYear.addEventListener("input", () => renderSetlistHistory());
 
-  saveCurrent.addEventListener("click", () => {
-    const saved = saveCurrentSetlistSnapshot({ forceNew: true });
-    if (!saved) {
-      const status = document.getElementById("setlist-status");
-      status.textContent = "Could not save setlist.";
-      status.classList.remove("ok");
-      return;
-    }
-    renderSetlistQuickPick();
-    renderSetlistHistory();
+  saveCurrent.addEventListener("click", async () => {
     const status = document.getElementById("setlist-status");
-    status.textContent = "Setlist saved.";
-    status.classList.add("ok");
+    saveCurrent.disabled = true;
+    status.textContent = "Saving...";
+    status.classList.remove("ok");
+    try {
+      await saveCurrentSetlistSnapshot({ forceNew: true });
+      renderSetlistQuickPick();
+      renderSetlistHistory();
+      status.textContent = "Setlist saved.";
+      status.classList.add("ok");
+    } catch (e) {
+      status.textContent = `Save failed: ${e.message}`;
+    } finally {
+      saveCurrent.disabled = false;
+    }
   });
 
   recallLoad.addEventListener("click", () => {
@@ -340,18 +398,25 @@ function wireSetlistBuilder() {
     status.classList.add("ok");
   });
 
-  recallDelete.addEventListener("click", () => {
+  recallDelete.addEventListener("click", async () => {
     const id = recallSelect.value;
     if (!id) return;
-    const deleted = deleteSetlistById(id);
     const status = document.getElementById("setlist-status");
-    if (!deleted) {
-      status.textContent = "Could not delete selected setlist.";
-      status.classList.remove("ok");
-      return;
+    recallDelete.disabled = true;
+    try {
+      const deleted = await deleteSetlistById(id);
+      if (!deleted) {
+        status.textContent = "Could not delete selected setlist.";
+        status.classList.remove("ok");
+        return;
+      }
+      status.textContent = "Setlist deleted.";
+      status.classList.add("ok");
+    } catch (e) {
+      status.textContent = `Delete failed: ${e.message}`;
+    } finally {
+      recallDelete.disabled = false;
     }
-    status.textContent = "Setlist deleted.";
-    status.classList.add("ok");
   });
 
   document.getElementById("generate-prep-doc").addEventListener("click", () => {
@@ -415,6 +480,62 @@ function wireSetlistBuilder() {
   });
 
   renderSetlistQuickPick();
+
+  // PCO import button
+  const pcoImportBtn = document.getElementById("pco-import-btn");
+  if (pcoImportBtn) {
+    pcoImportBtn.addEventListener("click", () => openPcoImportModal());
+  }
+
+  // localStorage migration button
+  const migrateBtn = document.getElementById("migrate-btn");
+  if (migrateBtn) {
+    migrateBtn.addEventListener("click", async () => {
+      const migrateStatus = document.getElementById("migrate-status");
+      const songLibraryData = parseJsonArray(localStorage.getItem(LIBRARY_STORAGE_KEY));
+      const setlistsData = parseJsonArray(localStorage.getItem(SETLISTS_STORAGE_KEY));
+      if (!songLibraryData && !setlistsData) {
+        migrateStatus.textContent = "No localStorage data found.";
+        return;
+      }
+      migrateBtn.disabled = true;
+      migrateStatus.textContent = "Importing...";
+      try {
+        const resp = await apiFetch("/api/migrate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ songLibrary: songLibraryData || [], savedSetlists: setlistsData || [] }),
+        });
+        const result = await resp.json();
+        migrateStatus.textContent = `Imported ${result.importedSongs} songs and ${result.importedSetlists} setlists.`;
+        migrateStatus.classList.add("ok");
+        // Reload data from server
+        [songLibrary, savedSetlists] = await Promise.all([
+          apiFetch("/api/songs").then((r) => r.json()),
+          apiFetch("/api/setlists").then((r) => r.json()),
+        ]);
+        renderLibraryList();
+        renderSetlistUI();
+        renderSetlistHistory();
+        renderSetlistQuickPick();
+        document.getElementById("migrate-card").style.display = "none";
+      } catch (e) {
+        migrateStatus.textContent = `Import failed: ${e.message}`;
+      } finally {
+        migrateBtn.disabled = false;
+      }
+    });
+  }
+
+  // PCO modal close button
+  const pcoModalClose = document.getElementById("pco-modal-close");
+  if (pcoModalClose) {
+    pcoModalClose.addEventListener("click", closePcoImportModal);
+  }
+  const pcoModalBackdrop = document.querySelector("#pco-modal .modal-backdrop");
+  if (pcoModalBackdrop) {
+    pcoModalBackdrop.addEventListener("click", closePcoImportModal);
+  }
 }
 
 function setPrepOutputText(value) {
@@ -435,31 +556,57 @@ function getPrepOutputLines() {
   );
 }
 
-function saveCurrentSetlistSnapshot(options = {}) {
+async function saveCurrentSetlistSnapshot(options = {}) {
+  const cfg = window.PREPPY_CONFIG || {};
   const forceNew = Boolean(options.forceNew);
-  const snapshotId = forceNew ? createId("set") : (setlistState.id || createId("set"));
   const snapshot = {
-    id: snapshotId,
     date: setlistState.date || todayDateString(),
     name: (setlistState.name || formatLongDate(setlistState.date || todayDateString())).trim(),
-    items: [...setlistState.items]
+    items: setlistState.items.map((item) => ({ arrangementId: item.arrangementId })),
   };
 
-  if (forceNew) {
-    savedSetlists.push(snapshot);
-    setlistState.id = snapshot.id;
-  } else {
-    setlistState.id = snapshot.id;
-    const existingIndex = savedSetlists.findIndex((entry) => entry.id === snapshot.id);
-    if (existingIndex >= 0) {
-      savedSetlists[existingIndex] = snapshot;
-    } else {
-      savedSetlists.push(snapshot);
+  if (cfg.dbEnabled) {
+    try {
+      if (!forceNew && setlistState.id) {
+        await apiFetch(`/api/setlists/${setlistState.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+        });
+        // Update in-memory
+        const idx = savedSetlists.findIndex((e) => e.id === setlistState.id);
+        const updated = { id: setlistState.id, pco_plan_id: null, ...snapshot, items: [...setlistState.items] };
+        if (idx >= 0) savedSetlists[idx] = updated;
+        else savedSetlists.push(updated);
+      } else {
+        const resp = await apiFetch("/api/setlists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+        });
+        const { id: newId } = await resp.json();
+        setlistState.id = newId;
+        savedSetlists.push({ id: newId, pco_plan_id: null, ...snapshot, items: [...setlistState.items] });
+      }
+    } catch (e) {
+      throw e;
     }
+  } else {
+    const snapshotId = forceNew ? createId("set") : (setlistState.id || createId("set"));
+    const localSnapshot = { id: snapshotId, date: snapshot.date, name: snapshot.name, items: [...setlistState.items] };
+    if (forceNew) {
+      savedSetlists.push(localSnapshot);
+      setlistState.id = localSnapshot.id;
+    } else {
+      setlistState.id = localSnapshot.id;
+      const existingIndex = savedSetlists.findIndex((entry) => entry.id === localSnapshot.id);
+      if (existingIndex >= 0) savedSetlists[existingIndex] = localSnapshot;
+      else savedSetlists.push(localSnapshot);
+    }
+    saveSavedSetlists();
   }
 
   savedSetlists.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  saveSavedSetlists();
   renderSetlistQuickPick();
   return true;
 }
@@ -512,8 +659,8 @@ function renderSetlistHistory() {
     const del = document.createElement("button");
     del.type = "button";
     del.textContent = "Delete";
-    del.addEventListener("click", () => {
-      deleteSetlistById(entry.id);
+    del.addEventListener("click", async () => {
+      await deleteSetlistById(entry.id);
     });
 
     actions.append(load, del);
@@ -550,7 +697,7 @@ function renderSetlistQuickPick() {
 }
 
 function loadSetlistById(id) {
-  const entry = savedSetlists.find((item) => item.id === id);
+  const entry = savedSetlists.find((item) => item.id == id);
   if (!entry) return false;
 
   setlistState = {
@@ -569,19 +716,102 @@ function loadSetlistById(id) {
   return true;
 }
 
-function deleteSetlistById(id) {
+async function deleteSetlistById(id) {
+  const cfg = window.PREPPY_CONFIG || {};
   const before = savedSetlists.length;
   savedSetlists = savedSetlists.filter((item) => item.id !== id);
   if (savedSetlists.length === before) return false;
-  saveSavedSetlists();
+
+  if (cfg.dbEnabled) {
+    await apiFetch(`/api/setlists/${id}`, { method: "DELETE" });
+  } else {
+    saveSavedSetlists();
+  }
 
   if (setlistState.id === id) {
-    setlistState.id = createId("set");
+    setlistState.id = null;
   }
 
   renderSetlistQuickPick();
   renderSetlistHistory();
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// PCO Import modal
+// ---------------------------------------------------------------------------
+
+function openPcoImportModal() {
+  const modal = document.getElementById("pco-modal");
+  if (!modal) return;
+  modal.hidden = false;
+  loadPcoPlans();
+}
+
+function closePcoImportModal() {
+  const modal = document.getElementById("pco-modal");
+  if (modal) modal.hidden = true;
+}
+
+async function loadPcoPlans() {
+  const body = document.getElementById("pco-modal-body");
+  if (!body) return;
+  body.innerHTML = "<p class='hint'>Loading upcoming plans...</p>";
+  try {
+    const resp = await apiFetch("/api/pco/plans");
+    const plans = await resp.json();
+    if (!plans.length) {
+      body.innerHTML = "<p class='hint'>No upcoming plans found in Planning Center.</p>";
+      return;
+    }
+    body.innerHTML = "";
+    const list = document.createElement("div");
+    list.className = "saved-song-list";
+    plans.forEach((plan) => {
+      const row = document.createElement("div");
+      row.className = "saved-song-row";
+      const info = document.createElement("div");
+      info.className = "saved-song-info";
+      info.innerHTML = `<strong>${escapeHtml(plan.date || "")}: ${escapeHtml(plan.title || plan.serviceTypeName)}</strong><span>${escapeHtml(plan.serviceTypeName)} &mdash; ${plan.itemCount} items</span>`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Import";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "Importing...";
+        try {
+          const importResp = await apiFetch(`/api/pco/import/${plan.id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ serviceTypeId: plan.serviceTypeId, date: plan.date, title: plan.title }),
+          });
+          const { setlistId } = await importResp.json();
+          // Reload data from server
+          [songLibrary, savedSetlists] = await Promise.all([
+            apiFetch("/api/songs").then((r) => r.json()),
+            apiFetch("/api/setlists").then((r) => r.json()),
+          ]);
+          closePcoImportModal();
+          // Load the newly imported setlist
+          loadSetlistById(setlistId);
+          activateTab("setlists");
+          renderLibraryList();
+          renderSetlistUI();
+          renderSetlistHistory();
+          renderSetlistQuickPick();
+        } catch (e) {
+          btn.textContent = "Import";
+          btn.disabled = false;
+          alert(`Import failed: ${e.message}`);
+        }
+      });
+      row.append(info, btn);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+  } catch (e) {
+    body.innerHTML = `<p class='hint'>Failed to load plans: ${escapeHtml(e.message)}</p>`;
+  }
 }
 
 function renderSectionPalette() {
@@ -823,11 +1053,98 @@ function moveSectionGhost(ghost, clientX, clientY, offsetY) {
   ghost.style.top = `${clientY - offsetY}px`;
 }
 
-function persistParsedSong() {
+async function persistParsedSong() {
+  const cfg = window.PREPPY_CONFIG || {};
   const title = (parsedSongState.song.title || "").trim();
   const artist = (parsedSongState.song.artist || "").trim();
   const arrangementName = (parsedSongState.arrangement.name || "").trim();
+  const sections = normalizeSections(parsedSongState.sections);
+  const arrPayload = {
+    name: arrangementName,
+    key: (parsedSongState.arrangement.key || "").trim(),
+    bpm: String(parsedSongState.arrangement.bpm || "").trim(),
+    sections,
+  };
 
+  if (cfg.dbEnabled) {
+    const songId = parsedSongState.song.id;
+    const arrId = parsedSongState.arrangement.id;
+
+    if (songId && arrId) {
+      // Update existing song + arrangement
+      await apiFetch(`/api/songs/${songId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, artist }),
+      });
+      await apiFetch(`/api/arrangements/${arrId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(arrPayload),
+      });
+      const song = songLibrary.find((s) => s.id === songId);
+      if (song) {
+        song.title = title;
+        song.artist = artist;
+        const arr = (song.arrangements || []).find((a) => a.id === arrId);
+        if (arr) Object.assign(arr, arrPayload);
+      }
+    } else if (songId && !arrId) {
+      // Existing song, new arrangement
+      await apiFetch(`/api/songs/${songId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, artist }),
+      });
+      const resp = await apiFetch(`/api/songs/${songId}/arrangements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(arrPayload),
+      });
+      const { id: newArrId } = await resp.json();
+      parsedSongState.arrangement.id = newArrId;
+      const song = songLibrary.find((s) => s.id === songId);
+      if (song) {
+        song.title = title;
+        song.artist = artist;
+        song.arrangements.push({ ...arrPayload, id: newArrId });
+      }
+    } else {
+      // New song — check if it already exists by title+artist
+      let existingSong = songLibrary.find(
+        (s) => normalizeText(s.title) === normalizeText(title) && normalizeText(s.artist || "") === normalizeText(artist)
+      );
+      if (existingSong) {
+        parsedSongState.song.id = existingSong.id;
+        const resp = await apiFetch(`/api/songs/${existingSong.id}/arrangements`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(arrPayload),
+        });
+        const { id: newArrId } = await resp.json();
+        parsedSongState.arrangement.id = newArrId;
+        existingSong.arrangements.push({ ...arrPayload, id: newArrId });
+      } else {
+        const resp = await apiFetch("/api/songs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, artist, arrangements: [arrPayload] }),
+        });
+        const { id: newSongId } = await resp.json();
+        // Reload to get proper IDs assigned by server
+        const songsResp = await apiFetch("/api/songs");
+        songLibrary = await songsResp.json();
+        const newSong = songLibrary.find((s) => s.id === newSongId);
+        if (newSong) {
+          parsedSongState.song.id = newSong.id;
+          parsedSongState.arrangement.id = newSong.arrangements[0]?.id;
+        }
+      }
+    }
+    return;
+  }
+
+  // localStorage fallback
   let song = parsedSongState.song.id
     ? songLibrary.find((entry) => entry.id === parsedSongState.song.id)
     : null;
@@ -873,6 +1190,7 @@ function persistParsedSong() {
 
   parsedSongState.song.id = song.id;
   parsedSongState.arrangement.id = arrangement.id;
+  saveSongLibrary();
 }
 
 function renderLibraryList() {
@@ -957,7 +1275,16 @@ function renderLibraryList() {
     const deleteSong = document.createElement("button");
     deleteSong.type = "button";
     deleteSong.textContent = "Delete Song";
-    deleteSong.addEventListener("click", () => {
+    deleteSong.addEventListener("click", async () => {
+      const cfg = window.PREPPY_CONFIG || {};
+      if (cfg.dbEnabled) {
+        try {
+          await apiFetch(`/api/songs/${song.id}`, { method: "DELETE" });
+        } catch (e) {
+          alert(`Delete failed: ${e.message}`);
+          return;
+        }
+      }
       songLibrary = songLibrary.filter((entry) => entry.id !== song.id);
       setlistState.items = setlistState.items.filter((item) => item.songId !== song.id);
       saveSongLibrary();
@@ -995,9 +1322,9 @@ function renderLibraryList() {
       const duplicate = document.createElement("button");
       duplicate.type = "button";
       duplicate.textContent = "Duplicate";
-      duplicate.addEventListener("click", () => {
-        const clone = {
-          id: createId("arr"),
+      duplicate.addEventListener("click", async () => {
+        const cfg = window.PREPPY_CONFIG || {};
+        const clonePayload = {
           name: `${arr.name || "Arrangement"} Copy`,
           key: arr.key || "",
           bpm: String(arr.bpm || ""),
@@ -1005,8 +1332,25 @@ function renderLibraryList() {
         };
         const targetSong = songLibrary.find((entry) => entry.id === song.id);
         if (!targetSong) return;
-        targetSong.arrangements.push(clone);
-        saveSongLibrary();
+
+        if (cfg.dbEnabled) {
+          try {
+            const resp = await apiFetch(`/api/songs/${song.id}/arrangements`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(clonePayload),
+            });
+            const { id: newArrId } = await resp.json();
+            targetSong.arrangements.push({ ...clonePayload, id: newArrId });
+          } catch (e) {
+            alert(`Duplicate failed: ${e.message}`);
+            return;
+          }
+        } else {
+          const clone = { id: createId("arr"), ...clonePayload };
+          targetSong.arrangements.push(clone);
+          saveSongLibrary();
+        }
         renderLibraryList();
         renderSetlistUI();
       });
@@ -1049,7 +1393,17 @@ function loadArrangement(songId, arrangementId) {
   renderSections(0);
 }
 
-function deleteArrangement(songId, arrangementId) {
+async function deleteArrangement(songId, arrangementId) {
+  const cfg = window.PREPPY_CONFIG || {};
+  if (cfg.dbEnabled) {
+    try {
+      await apiFetch(`/api/arrangements/${arrangementId}`, { method: "DELETE" });
+    } catch (e) {
+      alert(`Delete failed: ${e.message}`);
+      return;
+    }
+  }
+
   const song = songLibrary.find((entry) => entry.id === songId);
   if (!song) return;
 

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: preppy
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PCO_CLIENT_ID
+        sync: false
+      - key: PCO_CLIENT_SECRET
+        sync: false
+      - key: PCO_REDIRECT_URI
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: preppy-db
+          property: connectionString
+
+databases:
+  - name: preppy-db
+    databaseName: preppy
+    user: preppy
+    plan: free

@@ -5,7 +5,7 @@ import zipfile
 from datetime import datetime, timezone
 from xml.sax.saxutils import escape as xml_escape
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, session
 
 try:
     from pypdf import PdfReader  # type: ignore
@@ -13,6 +13,27 @@ except ModuleNotFoundError:
     PdfReader = None
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+
+# Register blueprints when DB is available (i.e. DATABASE_URL is set)
+_db_enabled = bool(os.environ.get("DATABASE_URL"))
+
+if _db_enabled:
+    from app.auth import auth_bp
+    from app.api import api_bp
+    from app.pco import pco_bp
+
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(api_bp)
+    app.register_blueprint(pco_bp)
+
+    # Run DB migrations on startup
+    from app.db import run_migrations
+    with app.app_context():
+        try:
+            run_migrations()
+        except Exception as _e:
+            print(f"[WARNING] Migration failed (DB may not be ready yet): {_e}")
 
 DEFAULT_HEADER_LINES = [
     "Shorthand Key",
@@ -35,7 +56,14 @@ CHORD_LINE_RE = re.compile(
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    user_name = session.get("user_name") if _db_enabled else None
+    user_id = session.get("user_id") if _db_enabled else None
+    return render_template(
+        "index.html",
+        user_name=user_name,
+        user_id=user_id,
+        db_enabled=_db_enabled,
+    )
 
 
 @app.post("/api/parse-chart")

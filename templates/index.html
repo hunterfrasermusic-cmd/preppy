@@ -8,6 +8,19 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
+
+    {% if db_enabled and not user_id %}
+    <!-- Login gate -->
+    <div class="login-gate">
+      <div class="login-card">
+        <img src="{{ url_for('static', filename='preppy-logo.svg') }}" alt="Preppy logo" class="login-logo" />
+        <h1>Preppy</h1>
+        <p>Sign in with your Planning Center account to get started.</p>
+        <a href="/auth/pco" class="btn-pco">Sign in with Planning Center</a>
+      </div>
+    </div>
+    {% else %}
+
     <div class="app">
       <header class="topbar">
         <h1 class="brand">
@@ -15,6 +28,14 @@
           <span>Preppy</span>
         </h1>
         <p>Prep flow + setlist + export</p>
+        {% if db_enabled and user_name %}
+        <div class="user-bar">
+          <span class="user-name">{{ user_name }}</span>
+          <form action="/auth/logout" method="post" style="display:inline">
+            <button type="submit" class="btn-logout">Sign out</button>
+          </form>
+        </div>
+        {% endif %}
       </header>
 
       <nav class="tabs" role="tablist" aria-label="Main tabs">
@@ -146,6 +167,9 @@
               <div class="section-actions">
                 <button id="setlist-recall-load" type="button">Load Selected</button>
                 <button id="setlist-recall-delete" type="button">Delete Selected</button>
+                {% if db_enabled and user_id %}
+                <button id="pco-import-btn" type="button">Import from Planning Center</button>
+                {% endif %}
               </div>
             </div>
           </div>
@@ -209,10 +233,43 @@
             </div>
             <div id="setlist-history-list" class="saved-song-list"></div>
           </div>
+
+          {% if db_enabled and user_id %}
+          <div class="settings-card" id="migrate-card" style="display:none">
+            <h3>Import from this browser</h3>
+            <p>First time here? Import your existing songs and setlists saved in this browser.</p>
+            <button id="migrate-btn" type="button">Import localStorage data</button>
+            <p id="migrate-status" class="save-status" aria-live="polite"></p>
+          </div>
+          {% endif %}
         </section>
       </main>
     </div>
 
+    {% if db_enabled and user_id %}
+    <!-- PCO Import Modal -->
+    <div id="pco-modal" class="modal" hidden>
+      <div class="modal-backdrop"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3>Import from Planning Center</h3>
+          <button id="pco-modal-close" type="button" class="modal-close">&times;</button>
+        </div>
+        <div id="pco-modal-body" class="modal-body">
+          <p class="hint">Loading upcoming plans...</p>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% endif %}{# end login gate #}
+
+    <script>
+      window.PREPPY_CONFIG = {
+        dbEnabled: {{ 'true' if db_enabled else 'false' }},
+        userId: {{ user_id | tojson }},
+      };
+    </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>
 </html>

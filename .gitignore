@@ -4,3 +4,6 @@ __pycache__/
 .toolchain/
 tauri-wrapper/node_modules/
 tauri-wrapper/src-tauri/target/
+.env
+*.env
+.DS_Store
