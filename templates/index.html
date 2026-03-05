@@ -76,6 +76,9 @@
                 <input id="search-bpm" type="text" placeholder="BPM (e.g. 95)" />
               </label>
             </div>
+            {% if db_enabled and user_id %}
+            <button id="pco-search-btn" type="button">Search Planning Center</button>
+            {% endif %}
             <div id="library-list" class="saved-song-list"></div>
           </div>
         </section>
@@ -190,6 +193,9 @@
               <button id="generate-prep-doc" type="button">Generate Prep Sheet</button>
               <button id="download-prep-docx" type="button">Download .docx</button>
             </div>
+            {% if db_enabled and user_id %}
+            <div id="pco-setlist-actions" class="settings-actions"></div>
+            {% endif %}
             <p id="setlist-status" class="save-status" aria-live="polite"></p>
           </div>
 
@@ -257,6 +263,22 @@
         </div>
         <div id="pco-modal-body" class="modal-body">
           <p class="hint">Loading upcoming plans...</p>
+        </div>
+      </div>
+    </div>
+    <!-- PCO Song Search Modal -->
+    <div id="pco-song-search-modal" class="modal" hidden>
+      <div class="modal-backdrop"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3>Search Planning Center Songs</h3>
+          <button id="pco-song-search-close" type="button" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <input id="pco-song-search-input" type="text" placeholder="Search songs by title..." style="width:100%;margin-bottom:0.75rem;" />
+          <div id="pco-song-search-results">
+            <p class="hint">Type to search Planning Center songs...</p>
+          </div>
         </div>
       </div>
     </div>

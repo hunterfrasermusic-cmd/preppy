@@ -245,7 +245,9 @@ def list_setlists():
     uid = current_user_id()
     with Db() as cur:
         cur.execute(
-            "SELECT id, name, date::text, pco_plan_id FROM setlists "
+            "SELECT id, name, date::text, pco_plan_id, "
+            "COALESCE(pco_service_type_id, '') as pco_service_type_id "
+            "FROM setlists "
             "WHERE user_id=%s ORDER BY date DESC NULLS LAST",
             (uid,),
         )
@@ -257,11 +259,12 @@ def list_setlists():
         sl_ids = [s["id"] for s in setlists]
         cur.execute(
             "SELECT si.setlist_id, si.position, "
+            "COALESCE(si.item_type, 'song') as item_type, si.label, "
             "a.id as arrangement_id, a.name as arrangement_name, a.key, a.bpm, "
             "s.id as song_id, s.title, s.artist "
             "FROM setlist_items si "
-            "JOIN arrangements a ON a.id=si.arrangement_id "
-            "JOIN songs s ON s.id=a.song_id "
+            "LEFT JOIN arrangements a ON a.id=si.arrangement_id "
+            "LEFT JOIN songs s ON s.id=a.song_id "
             "WHERE si.setlist_id = ANY(%s) ORDER BY si.setlist_id, si.position",
             (sl_ids,),
         )
@@ -269,15 +272,22 @@ def list_setlists():
 
     items_by_sl = {}
     for item in items:
-        items_by_sl.setdefault(item["setlist_id"], []).append({
-            "arrangementId": item["arrangement_id"],
-            "arrangementName": item["arrangement_name"],
-            "key": item["key"],
-            "bpm": item["bpm"],
-            "songId": item["song_id"],
-            "title": item["title"],
-            "artist": item["artist"],
-        })
+        if item["item_type"] in ("header", "item"):
+            items_by_sl.setdefault(item["setlist_id"], []).append({
+                "itemType": item["item_type"],
+                "label": item["label"] or "",
+            })
+        else:
+            items_by_sl.setdefault(item["setlist_id"], []).append({
+                "itemType": "song",
+                "arrangementId": item["arrangement_id"],
+                "arrangementName": item["arrangement_name"],
+                "key": item["key"],
+                "bpm": item["bpm"],
+                "songId": item["song_id"],
+                "title": item["title"],
+                "artist": item["artist"],
+            })
 
     for sl in setlists:
         sl["items"] = items_by_sl.get(sl["id"], [])
@@ -473,9 +483,18 @@ def _replace_sections(cur, arr_id, sections):
 def _replace_setlist_items(cur, sl_id, items):
     cur.execute("DELETE FROM setlist_items WHERE setlist_id=%s", (sl_id,))
     for pos, item in enumerate(items):
-        arr_id = item.get("arrangementId")
-        if arr_id:
+        item_type = item.get("itemType", "song")
+        if item_type in ("header", "item"):
             cur.execute(
-                "INSERT INTO setlist_items (setlist_id, arrangement_id, position) VALUES (%s, %s, %s)",
-                (sl_id, arr_id, pos),
+                "INSERT INTO setlist_items (setlist_id, position, item_type, label) "
+                "VALUES (%s, %s, %s, %s)",
+                (sl_id, pos, item_type, item.get("label", "")),
             )
+        else:
+            arr_id = item.get("arrangementId")
+            if arr_id:
+                cur.execute(
+                    "INSERT INTO setlist_items (setlist_id, arrangement_id, position, item_type) "
+                    "VALUES (%s, %s, %s, 'song')",
+                    (sl_id, arr_id, pos),
+                )

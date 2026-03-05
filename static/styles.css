@@ -599,3 +599,24 @@ button:disabled {
   overflow-y: auto;
   flex: 1;
 }
+
+/* Setlist header/divider rows (Phase 5) */
+.setlist-header-row {
+  background: var(--bg);
+  border-left: 3px solid var(--ink-soft);
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+.setlist-header-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.8rem;
+}
+
+/* PCO song search results */
+.pco-song-arrangements {
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--line);
+  margin-bottom: 0.5rem;
+}

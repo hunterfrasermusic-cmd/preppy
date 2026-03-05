@@ -113,11 +113,11 @@ Add "Search Planning Center" button in library panel (only rendered when `db_ena
 
 ### Definition of done
 
-- [ ] Search returns results within 1s for common song names
-- [ ] Importing a song/arrangement creates rows in `songs` and `arrangements` tables with `pco_song_id` / `pco_arrangement_id` populated
-- [ ] Re-importing the same song is idempotent (no duplicates)
-- [ ] Song appears in Preppy library immediately after import
-- [ ] Works with the existing token refresh flow
+- [x] Search returns results within 1s for common song names
+- [x] Importing a song/arrangement creates rows in `songs` and `arrangements` tables with `pco_song_id` / `pco_arrangement_id` populated
+- [x] Re-importing the same song is idempotent (no duplicates)
+- [x] Song appears in Preppy library immediately after import
+- [x] Works with the existing token refresh flow
 
 ---
 
@@ -195,10 +195,10 @@ Update `saveCurrentSetlistSnapshot` to include header items in the items payload
 
 ### Definition of done
 
-- [ ] Imported setlist preserves full service order including headers
-- [ ] Song sections are pre-populated from PCO arrangement sequence
-- [ ] Header items render as visual dividers in the setlist UI
-- [ ] Existing setlists without headers are unaffected
+- [x] Imported setlist preserves full service order including headers
+- [x] Song sections are pre-populated from PCO arrangement sequence
+- [x] Header items render as visual dividers in the setlist UI
+- [x] Existing setlists without headers are unaffected
 
 ---
 
@@ -214,14 +214,21 @@ Currently the workflow is: generate in Preppy → download `.docx` → manually 
 
 ### PCO API endpoints
 
-```
-POST /services/v2/service_types/<id>/plans/<plan_id>/attachments
-  Content-Type: multipart/form-data
-  body:
-    file: <binary>
-    filename: "03092026 Prep Sheet.docx"
+PCO uses a **two-step file upload** process (discovered via [issue #325](https://github.com/planningcenter/developers/issues/325)):
 
-  → returns Attachment object with { id, filename, page_order, url }
+```
+Step 1: Upload file → get UUID
+POST https://upload.planningcenteronline.com/v2/files
+  Content-Type: multipart/form-data
+  Authorization: Bearer <token>
+  body: file=<binary>
+  → returns { "data": { "id": "<uuid>", ... } }
+
+Step 2: Create attachment on plan using UUID
+POST /services/v2/service_types/<id>/plans/<plan_id>/attachments
+  Content-Type: application/json
+  body: { "data": { "type": "Attachment", "attributes": { "file_upload_identifier": "<uuid>", "filename": "Prep Sheet.docx" } } }
+  → returns Attachment object with { id, filename, url }
 ```
 
 Notes:
@@ -233,20 +240,9 @@ Notes:
 
 **File: `preppy/pco.py`**
 
-Add `_pco_post_file(uid, path, filename, file_bytes, content_type)` helper:
-
-```python
-def _pco_post_file(uid, path, filename, file_bytes, content_type):
-    token = _refresh_token_if_needed(uid)
-    resp = requests.post(
-        f"{PCO_API}{path}",
-        headers={"Authorization": f"Bearer {token}"},
-        files={"file": (filename, file_bytes, content_type)},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-```
+Add two helpers for the two-step process:
+- `_pco_upload_file(uid, filename, file_bytes, content_type)` — uploads to `upload.planningcenteronline.com`, returns UUID
+- `_pco_create_attachment(uid, path, upload_id, filename)` — creates JSON API attachment record using the UUID
 
 Add new route:
 
@@ -257,7 +253,8 @@ POST /api/pco/plans/<pco_plan_id>/upload-prep-sheet
     serviceTypeId: string
     filename: string
 
-  → calls POST /services/v2/service_types/<id>/plans/<plan_id>/attachments
+  → Step 1: uploads file to PCO upload service
+  → Step 2: creates attachment on the plan
   → returns { attachmentId, url }
 ```
 
@@ -291,11 +288,11 @@ No structural changes needed — the button is added dynamically by `app.js`.
 
 ### Definition of done
 
-- [ ] "Upload to Planning Center" button only appears for setlists imported from PCO
-- [ ] Clicking it generates the docx and uploads without a separate download step
-- [ ] The file appears in PCO under the plan's Files/Attachments tab
-- [ ] Upload errors are surfaced to the user with the PCO error message
-- [ ] `pco_service_type_id` is stored on setlist rows going forward
+- [x] "Upload to Planning Center" button only appears for setlists imported from PCO
+- [x] Clicking it generates the docx and uploads without a separate download step
+- [x] The file appears in PCO under the plan's Files/Attachments tab
+- [x] Upload errors are surfaced to the user with the PCO error message
+- [x] `pco_service_type_id` is stored on setlist rows going forward
 
 ---
 
@@ -346,23 +343,25 @@ Add "Sync with PCO" button next to "Upload to Planning Center" (only for PCO-sou
 
 ### Definition of done
 
-- [ ] Sync updates song order and metadata without destroying user-entered notes
-- [ ] New songs added to the PCO plan are added to the Preppy setlist
-- [ ] Songs removed from the PCO plan are removed from the setlist
-- [ ] A summary of changes is shown to the user
+- [x] Sync updates song order and metadata without destroying user-entered notes
+- [x] New songs added to the PCO plan are added to the Preppy setlist
+- [x] Songs removed from the PCO plan are removed from the setlist
+- [x] A summary of changes is shown to the user
 
 ---
 
 ## Implementation order
 
 ```
-Phase 4 (Song Search)     ← highest standalone value, no schema changes
-Phase 5 (Rich Import)     ← improves existing feature, small schema change
-Phase 6 (Upload to PCO)   ← requires Phase 5 (needs pco_service_type_id)
-Phase 7 (Sync)            ← requires Phase 5 + 6 infrastructure
+Phase 4 (Song Search)     ← COMPLETE
+Phase 5 (Rich Import)     ← COMPLETE
+Phase 6 (Upload to PCO)   ← COMPLETE (corrected to use PCO two-step file upload)
+Phase 7 (Sync)            ← COMPLETE
 ```
 
-Phases 4 and 5 can be worked in parallel by separate agents.
+### Enhancement: Arrange Once, Auto-Populate
+
+Added to `_upsert_pco_song` in `preppy/pco.py`: when a new arrangement is created from a PCO import, the system checks for any existing arrangement with the same `pco_arrangement_id` that already has sections (energy, notes, labels). If found, the sections are copied to the new arrangement automatically. This means arranging a song once in Preppy propagates to all future imports of plans containing that arrangement. Prefers the current user's data, then falls back to any user in the DB.
 
 ---
 

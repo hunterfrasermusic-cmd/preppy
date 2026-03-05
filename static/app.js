@@ -69,6 +69,7 @@ async function init() {
   wireTabs();
   wireLibraryEditor();
   wireSetlistBuilder();
+  initPcoSongSearch();
   renderSectionPalette();
   renderLibraryList();
   renderSetlistUI();
@@ -562,7 +563,12 @@ async function saveCurrentSetlistSnapshot(options = {}) {
   const snapshot = {
     date: setlistState.date || todayDateString(),
     name: (setlistState.name || formatLongDate(setlistState.date || todayDateString())).trim(),
-    items: setlistState.items.map((item) => ({ arrangementId: item.arrangementId })),
+    items: setlistState.items.map((item) => {
+      if (item.itemType === "header" || item.itemType === "item") {
+        return { itemType: item.itemType, label: item.label || "" };
+      }
+      return { arrangementId: item.arrangementId };
+    }),
   };
 
   if (cfg.dbEnabled) {
@@ -573,9 +579,15 @@ async function saveCurrentSetlistSnapshot(options = {}) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(snapshot),
         });
-        // Update in-memory
+        // Update in-memory — preserve PCO fields from existing entry
         const idx = savedSetlists.findIndex((e) => e.id === setlistState.id);
-        const updated = { id: setlistState.id, pco_plan_id: null, ...snapshot, items: [...setlistState.items] };
+        const existing = idx >= 0 ? savedSetlists[idx] : {};
+        const updated = {
+          ...existing,
+          id: setlistState.id,
+          ...snapshot,
+          items: [...setlistState.items],
+        };
         if (idx >= 0) savedSetlists[idx] = updated;
         else savedSetlists.push(updated);
       } else {
@@ -586,7 +598,7 @@ async function saveCurrentSetlistSnapshot(options = {}) {
         });
         const { id: newId } = await resp.json();
         setlistState.id = newId;
-        savedSetlists.push({ id: newId, pco_plan_id: null, ...snapshot, items: [...setlistState.items] });
+        savedSetlists.push({ id: newId, ...snapshot, items: [...setlistState.items] });
       }
     } catch (e) {
       throw e;
@@ -644,7 +656,8 @@ function renderSetlistHistory() {
 
     const info = document.createElement("div");
     info.className = "saved-song-info";
-    info.innerHTML = `<strong>${escapeHtml(entry.name || formatLongDate(entry.date))}</strong><span>${escapeHtml(formatLongDate(entry.date))} - ${entry.items.length} songs</span>`;
+    const songCount = entry.items.filter((i) => !i.itemType || i.itemType === "song").length;
+    info.innerHTML = `<strong>${escapeHtml(entry.name || formatLongDate(entry.date))}</strong><span>${escapeHtml(formatLongDate(entry.date))} - ${songCount} song${songCount !== 1 ? "s" : ""}</span>`;
 
     const actions = document.createElement("div");
     actions.className = "section-actions";
@@ -683,7 +696,8 @@ function renderSetlistQuickPick() {
   savedSetlists.forEach((entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.textContent = `${formatLongDate(entry.date)} - ${entry.name || formatLongDate(entry.date)} (${entry.items.length})`;
+    const qpSongCount = entry.items.filter((i) => !i.itemType || i.itemType === "song").length;
+    option.textContent = `${formatLongDate(entry.date)} - ${entry.name || formatLongDate(entry.date)} (${qpSongCount})`;
     select.appendChild(option);
   });
 
@@ -713,6 +727,7 @@ function loadSetlistById(id) {
   renderSetlistUI();
   renderSetlistQuickPick();
   renderSetlistHistory();
+  renderPcoSetlistActions();
   return true;
 }
 
@@ -812,6 +827,276 @@ async function loadPcoPlans() {
   } catch (e) {
     body.innerHTML = `<p class='hint'>Failed to load plans: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: PCO Song Library Search
+// ---------------------------------------------------------------------------
+
+let pcoSongSearchTimer = null;
+
+function openPcoSongSearchModal() {
+  const modal = document.getElementById("pco-song-search-modal");
+  if (!modal) return;
+  modal.hidden = false;
+  const input = document.getElementById("pco-song-search-input");
+  if (input) { input.value = ""; input.focus(); }
+  document.getElementById("pco-song-search-results").innerHTML =
+    "<p class='hint'>Type to search Planning Center songs...</p>";
+}
+
+function closePcoSongSearchModal() {
+  const modal = document.getElementById("pco-song-search-modal");
+  if (modal) modal.hidden = true;
+}
+
+function initPcoSongSearch() {
+  const input = document.getElementById("pco-song-search-input");
+  const closeBtn = document.getElementById("pco-song-search-close");
+  const searchBtn = document.getElementById("pco-search-btn");
+  if (searchBtn) searchBtn.addEventListener("click", () => openPcoSongSearchModal());
+  if (closeBtn) closeBtn.addEventListener("click", () => closePcoSongSearchModal());
+
+  const backdrop = document.querySelector("#pco-song-search-modal .modal-backdrop");
+  if (backdrop) backdrop.addEventListener("click", () => closePcoSongSearchModal());
+
+  if (input) {
+    input.addEventListener("input", () => {
+      clearTimeout(pcoSongSearchTimer);
+      const q = input.value.trim();
+      if (q.length < 2) {
+        document.getElementById("pco-song-search-results").innerHTML =
+          "<p class='hint'>Type at least 2 characters...</p>";
+        return;
+      }
+      pcoSongSearchTimer = setTimeout(() => searchPcoSongs(q), 350);
+    });
+  }
+}
+
+async function searchPcoSongs(query) {
+  const results = document.getElementById("pco-song-search-results");
+  results.innerHTML = "<p class='hint'>Searching...</p>";
+  try {
+    const resp = await apiFetch(`/api/pco/songs?q=${encodeURIComponent(query)}`);
+    const songs = await resp.json();
+    if (!songs.length) {
+      results.innerHTML = "<p class='hint'>No songs found.</p>";
+      return;
+    }
+    results.innerHTML = "";
+    const list = document.createElement("div");
+    list.className = "saved-song-list";
+    songs.forEach((song) => {
+      const row = document.createElement("div");
+      row.className = "saved-song-row pco-song-result";
+
+      const info = document.createElement("div");
+      info.className = "saved-song-info";
+      info.innerHTML = `<strong>${escapeHtml(song.title)}</strong><span>${escapeHtml(song.author || "")} &mdash; ${song.arrangementCount} arrangement(s)</span>`;
+      info.style.cursor = "pointer";
+
+      const importBtn = document.createElement("button");
+      importBtn.type = "button";
+      importBtn.textContent = "Import All";
+      importBtn.addEventListener("click", async () => {
+        importBtn.disabled = true;
+        importBtn.textContent = "Importing...";
+        try {
+          await apiFetch(`/api/pco/songs/${song.pcoSongId}/import`, { method: "POST" });
+          songLibrary = await apiFetch("/api/songs").then((r) => r.json());
+          renderLibraryList();
+          importBtn.textContent = "Imported";
+        } catch (e) {
+          importBtn.textContent = "Import All";
+          importBtn.disabled = false;
+          alert(`Import failed: ${e.message}`);
+        }
+      });
+
+      const detailDiv = document.createElement("div");
+      detailDiv.className = "pco-song-arrangements";
+      detailDiv.hidden = true;
+
+      info.addEventListener("click", async () => {
+        if (!detailDiv.hidden) { detailDiv.hidden = true; return; }
+        detailDiv.innerHTML = "<p class='hint'>Loading arrangements...</p>";
+        detailDiv.hidden = false;
+        try {
+          const arrResp = await apiFetch(`/api/pco/songs/${song.pcoSongId}/arrangements`);
+          const arrangements = await arrResp.json();
+          detailDiv.innerHTML = "";
+          arrangements.forEach((arr) => {
+            const arrRow = document.createElement("div");
+            arrRow.className = "saved-song-row";
+            arrRow.style.paddingLeft = "1.5rem";
+            const arrInfo = document.createElement("div");
+            arrInfo.className = "saved-song-info";
+            arrInfo.innerHTML = `<strong>${escapeHtml(arr.name)}</strong><span>Key: ${escapeHtml(arr.key || "—")} | BPM: ${escapeHtml(arr.bpm || "—")}</span>`;
+            const arrBtn = document.createElement("button");
+            arrBtn.type = "button";
+            arrBtn.textContent = "Import";
+            arrBtn.addEventListener("click", async () => {
+              arrBtn.disabled = true;
+              arrBtn.textContent = "Importing...";
+              try {
+                await apiFetch(`/api/pco/songs/${song.pcoSongId}/import`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ pcoArrangementId: arr.pcoArrangementId }),
+                });
+                songLibrary = await apiFetch("/api/songs").then((r) => r.json());
+                renderLibraryList();
+                arrBtn.textContent = "Imported";
+              } catch (e) {
+                arrBtn.textContent = "Import";
+                arrBtn.disabled = false;
+                alert(`Import failed: ${e.message}`);
+              }
+            });
+            arrRow.append(arrInfo, arrBtn);
+            detailDiv.appendChild(arrRow);
+          });
+        } catch (e) {
+          detailDiv.innerHTML = `<p class='hint'>Failed: ${escapeHtml(e.message)}</p>`;
+        }
+      });
+
+      row.append(info, importBtn);
+      list.appendChild(row);
+      list.appendChild(detailDiv);
+    });
+    results.appendChild(list);
+  } catch (e) {
+    results.innerHTML = `<p class='hint'>Search failed: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: Upload Prep Sheet to PCO
+// ---------------------------------------------------------------------------
+
+async function uploadPrepSheetToPco() {
+  const cfg = window.PREPPY_CONFIG || {};
+  if (!cfg.dbEnabled) return;
+
+  const currentSetlist = savedSetlists.find((s) => s.id == setlistState.id);
+  if (!currentSetlist || !currentSetlist.pco_plan_id) {
+    alert("This setlist was not imported from Planning Center.");
+    return;
+  }
+
+  const btn = document.getElementById("pco-upload-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Uploading..."; }
+
+  try {
+    // Generate the docx blob using the existing export logic
+    const model = generatePrepSheetModel();
+    const editedLines = getPrepOutputLines();
+    const linesForExport = editedLines.length ? editedLines : model.lines;
+    if (!linesForExport.length) throw new Error("No content to export. Add songs first.");
+
+    const resp = await fetch("/api/export-docx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lines: linesForExport,
+        filename: model.filename,
+        header_lines: DEFAULT_EXPORT_HEADER_LINES,
+      }),
+    });
+    if (!resp.ok) throw new Error("Failed to generate prep sheet");
+    const blob = await resp.blob();
+
+    const filename = `${setlistState.name || "Prep Sheet"}.docx`;
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    formData.append("serviceTypeId", currentSetlist.pco_service_type_id || "");
+    formData.append("filename", filename);
+
+    const uploadResp = await apiFetch(
+      `/api/pco/plans/${currentSetlist.pco_plan_id}/upload-prep-sheet`,
+      { method: "POST", body: formData }
+    );
+    const result = await uploadResp.json();
+    if (btn) { btn.textContent = "Uploaded!"; }
+    setTimeout(() => { if (btn) { btn.textContent = "Upload to Planning Center"; btn.disabled = false; } }, 3000);
+  } catch (e) {
+    alert(`Upload failed: ${e.message}`);
+    if (btn) { btn.textContent = "Upload to Planning Center"; btn.disabled = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: Sync with PCO
+// ---------------------------------------------------------------------------
+
+async function syncWithPco() {
+  const cfg = window.PREPPY_CONFIG || {};
+  if (!cfg.dbEnabled) return;
+
+  const currentSetlist = savedSetlists.find((s) => s.id == setlistState.id);
+  if (!currentSetlist || !currentSetlist.pco_plan_id) {
+    alert("This setlist was not imported from Planning Center.");
+    return;
+  }
+
+  const btn = document.getElementById("pco-sync-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Syncing..."; }
+
+  try {
+    const resp = await apiFetch(`/api/pco/plans/${currentSetlist.pco_plan_id}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serviceTypeId: currentSetlist.pco_service_type_id || "",
+        setlistId: currentSetlist.id,
+      }),
+    });
+    const result = await resp.json();
+
+    // Reload data
+    [songLibrary, savedSetlists] = await Promise.all([
+      apiFetch("/api/songs").then((r) => r.json()),
+      apiFetch("/api/setlists").then((r) => r.json()),
+    ]);
+    loadSetlistById(currentSetlist.id);
+    renderLibraryList();
+
+    const changes = result.changes || {};
+    const summary = `Sync complete: ${changes.added || 0} added, ${changes.removed || 0} removed${changes.reordered ? ", order updated" : ""}.`;
+    if (btn) { btn.textContent = summary; }
+    setTimeout(() => { if (btn) { btn.textContent = "Sync with PCO"; btn.disabled = false; } }, 4000);
+  } catch (e) {
+    alert(`Sync failed: ${e.message}`);
+    if (btn) { btn.textContent = "Sync with PCO"; btn.disabled = false; }
+  }
+}
+
+function renderPcoSetlistActions() {
+  const container = document.getElementById("pco-setlist-actions");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const cfg = window.PREPPY_CONFIG || {};
+  if (!cfg.dbEnabled) return;
+
+  const currentSetlist = savedSetlists.find((s) => s.id == setlistState.id);
+  if (!currentSetlist || !currentSetlist.pco_plan_id) return;
+
+  const uploadBtn = document.createElement("button");
+  uploadBtn.type = "button";
+  uploadBtn.id = "pco-upload-btn";
+  uploadBtn.textContent = "Upload to Planning Center";
+  uploadBtn.addEventListener("click", uploadPrepSheetToPco);
+
+  const syncBtn = document.createElement("button");
+  syncBtn.type = "button";
+  syncBtn.id = "pco-sync-btn";
+  syncBtn.textContent = "Sync with PCO";
+  syncBtn.addEventListener("click", syncWithPco);
+
+  container.append(syncBtn, uploadBtn);
 }
 
 function renderSectionPalette() {
@@ -1472,9 +1757,38 @@ function renderSetlistUI() {
     return;
   }
 
+  let songNumber = 0;
   setlistState.items.forEach((item, index) => {
+    // Header / non-song items
+    if (item.itemType === "header" || item.itemType === "item") {
+      const row = document.createElement("div");
+      row.className = "setlist-edit-row setlist-header-row";
+
+      const info = document.createElement("div");
+      info.className = "saved-song-info";
+      info.innerHTML = `<strong class="setlist-header-label">${escapeHtml(item.label || "—")}</strong>`;
+
+      const actions = document.createElement("div");
+      actions.className = "section-actions hover-actions";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "icon-action";
+      remove.textContent = "-";
+      remove.title = "Remove header";
+      remove.addEventListener("click", () => {
+        setlistState.items.splice(index, 1);
+        renderSetlistUI();
+      });
+      actions.append(remove);
+
+      row.append(info, actions);
+      items.appendChild(row);
+      return;
+    }
+
     const resolved = resolveSetlistItem(item);
     if (!resolved) return;
+    songNumber++;
 
     const row = document.createElement("div");
     row.className = "setlist-edit-row";
@@ -1489,7 +1803,7 @@ function renderSetlistUI() {
     const info = document.createElement("div");
     info.className = "saved-song-info";
     const subtitle = `${resolved.arrangement.name || "Arrangement"}${resolved.arrangement.key ? ` - ${resolved.arrangement.key}` : ""}${resolved.arrangement.bpm ? ` - ${resolved.arrangement.bpm} BPM` : ""}`;
-    info.innerHTML = `<strong>${index + 1}. ${escapeHtml(resolved.song.title || "Untitled")}</strong><span>${escapeHtml(subtitle)}</span>`;
+    info.innerHTML = `<strong>${songNumber}. ${escapeHtml(resolved.song.title || "Untitled")}</strong><span>${escapeHtml(subtitle)}</span>`;
 
     const actions = document.createElement("div");
     actions.className = "section-actions hover-actions";
@@ -1597,8 +1911,10 @@ function moveSetlistGhost(ghost, clientX, clientY, offsetY) {
 }
 
 function generatePrepSheetModel() {
-  const resolved = setlistState.items.map(resolveSetlistItem).filter(Boolean);
-  if (!resolved.length) {
+  const hasContent = setlistState.items.some(
+    (item) => (item.itemType === "header" || item.itemType === "item") || resolveSetlistItem(item)
+  );
+  if (!hasContent) {
     const filename = buildExportFilename([]);
     return { lines: [], text: "", filename };
   }
@@ -1606,7 +1922,14 @@ function generatePrepSheetModel() {
   const lines = [`Prep Sheet ${formatLongDate(setlistState.date)}`];
   const titles = [];
 
-  resolved.forEach(({ song, arrangement }) => {
+  setlistState.items.forEach((item) => {
+    if (item.itemType === "header" || item.itemType === "item") {
+      lines.push(`--- ${item.label || ""} ---`);
+      return;
+    }
+    const resolved = resolveSetlistItem(item);
+    if (!resolved) return;
+    const { song, arrangement } = resolved;
     titles.push(song.title || "Untitled");
     const key = arrangement.key ? ` [${arrangement.key}]` : "";
     const bpm = arrangement.bpm ? ` - ${arrangement.bpm}BPM` : "";
