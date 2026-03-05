@@ -76,9 +76,6 @@
                 <input id="search-bpm" type="text" placeholder="BPM (e.g. 95)" />
               </label>
             </div>
-            {% if db_enabled and user_id %}
-            <button id="pco-search-btn" type="button">Search Planning Center</button>
-            {% endif %}
             <div id="library-list" class="saved-song-list"></div>
           </div>
         </section>
@@ -90,7 +87,12 @@
           <div class="settings-card">
             <div class="song-stub-head">
               <h3>Upload Chart</h3>
-              <button id="new-blank-song" type="button">New Blank Song</button>
+              <div class="section-actions">
+                <button id="new-blank-song" type="button">New Blank Song</button>
+                {% if db_enabled and user_id %}
+                <button id="pco-search-btn" type="button">Import from Planning Center</button>
+                {% endif %}
+              </div>
             </div>
             <form id="chart-upload-form" class="chart-upload-form">
               <label>
