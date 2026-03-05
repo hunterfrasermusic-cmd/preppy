@@ -1,6 +1,12 @@
 from io import BytesIO
 import os
 import re
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 import zipfile
 from datetime import datetime, timezone
 from xml.sax.saxutils import escape as xml_escape
@@ -19,16 +25,16 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 _db_enabled = bool(os.environ.get("DATABASE_URL"))
 
 if _db_enabled:
-    from app.auth import auth_bp
-    from app.api import api_bp
-    from app.pco import pco_bp
+    from preppy.auth import auth_bp
+    from preppy.api import api_bp
+    from preppy.pco import pco_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(api_bp)
     app.register_blueprint(pco_bp)
 
     # Run DB migrations on startup
-    from app.db import run_migrations
+    from preppy.db import run_migrations
     with app.app_context():
         try:
             run_migrations()
